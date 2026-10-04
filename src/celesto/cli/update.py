@@ -97,9 +97,13 @@ def _is_uv_tool_install() -> bool:
             [uv, "tool", "list"],
             capture_output=True,
             text=True,
+            # Bounded: this also runs on failure paths purely to render a
+            # recovery command, and a stalled `uv` must not stop the caller
+            # from reporting the real failure.
+            timeout=10,
         )
         return bool(re.search(r"^celesto[ \t]", result.stdout, re.MULTILINE))
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return False
 
 
@@ -149,6 +153,10 @@ def run_update(*, check: bool = False, json_output: bool = False) -> int:
     latest = result.latest
 
     if check:
+        # Reachability is checked before the unknown-version case: when PyPI
+        # could not be reached we say so, whatever the installed version is.
+        if not result.reachable:
+            return _report_pypi_unreachable(current=current, json_output=json_output)
         if latest is None and current is None:
             data: dict[str, object] = {
                 "current": None,
@@ -162,8 +170,6 @@ def run_update(*, check: bool = False, json_output: bool = False) -> int:
                     f"Could not determine the installed celesto version. Run: {_retry_command()}\n"
                 )
             return 1
-        if not result.reachable:
-            return _report_pypi_unreachable(current=current, json_output=json_output)
         if latest is None:
             data = {"current": current, "latest": None, "update_available": False}
             if json_output:
