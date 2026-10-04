@@ -246,6 +246,23 @@ def which(binary: str) -> Path | None:
     return Path(result) if result else None
 
 
+def linux_os_release_ids(os_release_path: Path = Path("/etc/os-release")) -> set[str]:
+    """Return Linux distribution IDs from /etc/os-release."""
+    ids: set[str] = set()
+    try:
+        lines = os_release_path.read_text().splitlines()
+    except OSError:
+        return ids
+
+    for line in lines:
+        key, sep, value = line.partition("=")
+        if sep != "=" or key not in {"ID", "ID_LIKE"}:
+            continue
+        value = value.strip().strip('"').strip("'")
+        ids.update(part.strip().lower() for part in value.split() if part.strip())
+    return ids
+
+
 def ensure_ssh_key(key_dir: Path | None = None) -> tuple[Path, Path]:
     """Ensure an ED25519 SSH key pair exists for the current user.
 

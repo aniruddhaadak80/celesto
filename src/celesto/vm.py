@@ -97,7 +97,11 @@ from celesto.types import (
     VMState,
     VsockConfig,
 )
-from celesto.utils import RUNTIME_PRIVILEGE_SETUP_HINT, which
+from celesto.utils import (
+    RUNTIME_PRIVILEGE_SETUP_HINT,
+    which,
+)
+from celesto.utils import linux_os_release_ids as _linux_os_release_ids
 
 logger = logging.getLogger(__name__)
 
@@ -135,23 +139,6 @@ def _file_size(path: Path) -> int:
         return path.stat().st_size
     except OSError:
         return 0
-
-
-def _linux_os_release_ids(os_release_path: Path = Path("/etc/os-release")) -> set[str]:
-    """Return Linux distribution IDs from /etc/os-release."""
-    ids: set[str] = set()
-    try:
-        lines = os_release_path.read_text().splitlines()
-    except OSError:
-        return ids
-
-    for line in lines:
-        key, sep, value = line.partition("=")
-        if sep != "=" or key not in {"ID", "ID_LIKE"}:
-            continue
-        value = value.strip().strip('"').strip("'")
-        ids.update(part.strip().lower() for part in value.split() if part.strip())
-    return ids
 
 
 def _qemu_system_package_for_host() -> str:

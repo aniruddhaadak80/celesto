@@ -42,7 +42,7 @@ from celesto.runtime.backends import (
     BACKEND_VZ,
     resolve_backend,
 )
-from celesto.utils import run_command, which
+from celesto.utils import linux_os_release_ids, run_command, which
 
 DoctorStatus = Literal["pass", "warn", "fail"]
 
@@ -200,6 +200,18 @@ def _check_gvproxy() -> DoctorCheck:
             fix="brew install podman",
         )
     return DoctorCheck(name="gvproxy", status="pass", detail=str(path))
+
+
+def _libkrun_install_command() -> str:
+    """Return the one libkrun install command that works on this machine."""
+    if platform.system() == "Darwin":
+        return "brew tap libkrun/krun && brew install libkrun/krun/libkrun"
+    ids = linux_os_release_ids()
+    if ids & {"debian", "ubuntu"}:
+        return "sudo apt install libkrun"
+    if ids & {"fedora", "rhel", "centos"}:
+        return "sudo dnf install libkrun"
+    return "Install libkrun for this distribution, then run 'celesto setup'."
 
 
 def _check_libkrun_rust_target() -> DoctorCheck:
@@ -841,13 +853,7 @@ def generate_doctor_report(backend: str | None = None) -> DoctorReport:
                     if available
                     else "libkrun shared library not found; install libkrun >= 1.9"
                 ),
-                fix=None
-                if available
-                else (
-                    "brew tap libkrun/krun && brew install libkrun/krun/libkrun"
-                    if platform.system() == "Darwin"
-                    else "sudo dnf install libkrun"
-                ),
+                fix=None if available else _libkrun_install_command(),
             )
         )
 

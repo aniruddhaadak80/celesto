@@ -32,6 +32,7 @@ from celesto.host.doctor import (
     generate_doctor_report,
     run_doctor,
 )
+from celesto.utils import linux_os_release_ids
 
 
 def _pass(name: str) -> DoctorCheck:
@@ -442,9 +443,115 @@ class TestDoctorQemu:
             generate_doctor_report(backend="qemu")
 
 
+def _libkrun_library_fix(report: DoctorReport) -> str:
+    """Return the libkrun library fix line, failing if the row has no fix."""
+    libkrun = next(check for check in report.checks if check.name == "libkrun-library")
+    assert libkrun.status == "fail"
+    assert libkrun.fix is not None
+    return libkrun.fix
+
+
+def _linux_libkrun_fix(os_release_ids: set[str]) -> str:
+    """Return the fix a Linux host reporting these distro IDs gets."""
+    with (
+        patch("celesto.host.doctor._check_command", new=lambda binary, hint: _pass(binary)),
+        patch(
+            "celesto.host.doctor._check_libkrun_rust_target",
+            new=lambda: _pass("rust-musl-target"),
+        ),
+        patch("celesto.host.doctor._check_kvm_runtime", new=lambda: _pass("kvm")),
+        patch("celesto.runtime._libkrun_ffi.is_available", return_value=False),
+        patch("celesto.host.doctor.platform.system", return_value="Linux"),
+        patch("celesto.host.doctor.linux_os_release_ids", return_value=os_release_ids),
+    ):
+        return _libkrun_library_fix(generate_doctor_report(backend="libkrun"))
+
+
+def _linux_libkrun_fix_from_os_release(tmp_path: Path, body: str) -> str:
+    """Return the fix a Linux host gets when its os-release file is ``body``."""
+    os_release_path = tmp_path / "os-release"
+    os_release_path.write_text(body, encoding="utf-8")
+    with (
+        patch("celesto.host.doctor._check_command", new=lambda binary, hint: _pass(binary)),
+        patch(
+            "celesto.host.doctor._check_libkrun_rust_target",
+            new=lambda: _pass("rust-musl-target"),
+        ),
+        patch("celesto.host.doctor._check_kvm_runtime", new=lambda: _pass("kvm")),
+        patch("celesto.runtime._libkrun_ffi.is_available", return_value=False),
+        patch("celesto.host.doctor.platform.system", return_value="Linux"),
+        patch(
+            "celesto.host.doctor.linux_os_release_ids",
+            side_effect=lambda: linux_os_release_ids(os_release_path),
+        ),
+    ):
+        return _libkrun_library_fix(generate_doctor_report(backend="libkrun"))
+
+
 class TestDoctorLibkrun:
     """Libkrun backend diagnostic tests."""
 
+    @pytest.mark.parametrize(
+        "os_release_ids",
+        [{"fedora"}, {"rhel"}, {"centos"}],
+    )
+    def test_rpm_family_linux_uses_dnf(self, os_release_ids: set[str]) -> None:
+        """Fedora, RHEL and CentOS users should be told to use dnf."""
+        fix = _linux_libkrun_fix(os_release_ids)
+
+        assert fix == "sudo dnf install libkrun"
+        assert "\n" not in fix
+
+    @pytest.mark.parametrize(
+        "os_release_ids",
+        [{"debian"}, {"ubuntu"}, {"ubuntu", "debian"}],
+    )
+    def test_debian_family_linux_uses_apt(self, os_release_ids: set[str]) -> None:
+        """Debian and Ubuntu users should be told to use apt, not dnf."""
+        fix = _linux_libkrun_fix(os_release_ids)
+
+        assert fix == "sudo apt install libkrun"
+        assert "\n" not in fix
+        assert "dnf" not in fix
+
+    def test_unknown_linux_distro_points_at_celesto_setup(self) -> None:
+        """An unrecognized distribution must not be given an invented package manager."""
+        fix = _linux_libkrun_fix({"alpine"})
+
+        assert "Install libkrun" in fix
+        assert "celesto setup" in fix
+        assert "\n" not in fix
+        assert "dnf" not in fix
+        assert "apt" not in fix
+        assert "brew" not in fix
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            ('ID=debian\nID_LIKE=""\nPRETTY_NAME="Debian GNU/Linux"\n', "sudo apt install libkrun"),
+            ("ID=ubuntu\nID_LIKE=debian\n", "sudo apt install libkrun"),
+            ('ID=fedora\nID_LIKE=""\n', "sudo dnf install libkrun"),
+            ('ID=rhel\nID_LIKE="fedora"\n', "sudo dnf install libkrun"),
+            ('ID=centos\nID_LIKE="rhel fedora"\n', "sudo dnf install libkrun"),
+        ],
+    )
+    def test_install_command_follows_a_real_os_release_file(
+        self, tmp_path: Path, body: str, expected: str
+    ) -> None:
+        """The doctor should pick the package manager by reading a real os-release file."""
+        assert _linux_libkrun_fix_from_os_release(tmp_path, body) == expected
+
+    def test_shared_parser_resolves_the_id_like_chain(self, tmp_path: Path) -> None:
+        """The shared parser is the one both the doctor and the VM layer call."""
+        os_release_path = tmp_path / "os-release"
+        os_release_path.write_text(
+            'PRETTY_NAME="Ubuntu 26.04 LTS"\nNAME="Ubuntu"\nID=ubuntu\nID_LIKE=debian\n',
+            encoding="utf-8",
+        )
+
+        assert linux_os_release_ids(os_release_path) == {"ubuntu", "debian"}
+
+    @patch("celesto.host.doctor.linux_os_release_ids", return_value={"fedora"})
     @patch("celesto.host.doctor._check_command", new=lambda binary, hint: _pass(binary))
     @patch("celesto.host.doctor._check_libkrun_rust_target", new=lambda: _pass("rust-musl-target"))
     @patch("celesto.host.doctor._check_kvm_runtime", new=lambda: _pass("kvm"))
@@ -454,6 +561,7 @@ class TestDoctorLibkrun:
         self,
         _mock_system: MagicMock,
         _mock_available: MagicMock,
+        _mock_ids: MagicMock,
     ) -> None:
         """Linux users should get only the install command that works on their machine."""
         report = generate_doctor_report(backend="libkrun")
